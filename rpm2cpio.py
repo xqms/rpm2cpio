@@ -20,16 +20,11 @@ rpm2cpio < adjtimex-1.20-2.1.i386.rpm  | cpio -it
 133 blocks
 '''
 
-from __future__ import print_function
-
 import sys
 import gzip
 import subprocess
 
-try:
-    from StringIO import StringIO
-except ImportError:
-    from io import StringIO
+from io import BytesIO
 
 HAS_LZMA_MODULE = True
 try:
@@ -45,7 +40,7 @@ RPM_MAGIC = b'\xed\xab\xee\xdb'
 
 
 def gzip_decompress(data):
-    gzstream = StringIO(data)
+    gzstream = BytesIO(data)
     gzipper = gzip.GzipFile(fileobj=gzstream)
     data = gzipper.read()
     return data
@@ -75,7 +70,6 @@ def bzip2_decompress(data):
 
 def is_rpm(reader):
     return reader.read(4) == RPM_MAGIC
-
 
 def b2i(data, order='big'):
     """
@@ -107,12 +101,20 @@ def extract_cpio(reader):
     # SIGNATURE
     rpm_sig_magic = reader.read(3)
     rpm_sig_version = reader.read(1)
+
+    assert rpm_sig_magic == b'\216\255\350', f'Wrong RPM sig magic ({rpm_sig_magic})'
+    assert rpm_sig_version == b'\x01', f'Wrong RPM sig version ({rpm_sig_version})'
+
     rpm_sig_reserved = reader.read(4)
-    rpm_sig_idx_len = reader.read(4)
-    rpm_sig_data_len = reader.read(4)
+    rpm_sig_idx_len = b2i(reader.read(4))
+    rpm_sig_data_len = b2i(reader.read(4))
     ## Skip signature parsing
-    header_pos = b2i(rpm_sig_idx_len) * 16 + b2i(rpm_sig_data_len) + 96 + 16 + 4
-    reader.seek(header_pos)
+    reader.read(rpm_sig_idx_len * 16 + rpm_sig_data_len)
+
+    # Skip to next 8 byte boundary
+    if reader.tell() % 8 != 0:
+        reader.read(8 - reader.tell() % 8)
+
     # HEADER
     rpm_header_magic = reader.read(3)
     rpm_header_version = reader.read(1)
@@ -120,6 +122,9 @@ def extract_cpio(reader):
     rpm_header_idx_len = reader.read(4)
     rpm_header_data_len = reader.read(4)
     rpm_header_data_offset_base = reader.tell() + b2i(rpm_header_idx_len) * 16
+
+    assert rpm_header_magic == b'\216\255\350', f'Wrong RPM header magic ({rpm_header_magic})'
+    assert rpm_header_version == b'\x01'
 
     rpm_tag_payloadcompressor = None
     for tag in range(b2i(rpm_header_idx_len) - 1):
@@ -150,18 +155,11 @@ def extract_cpio(reader):
 
     return None
 
+def rpm2cpio():
+    buffer = sys.stdin.buffer.read()
+    reader = BytesIO(buffer)
+    writer = sys.stdout.buffer
 
-def rpm2cpio(stream_in=None, stream_out=None):
-    if stream_in is None:
-        stream_in = sys.stdin
-    if stream_out is None:
-        stream_out = sys.stdout
-    try:
-        reader = stream_in.buffer
-        writer = stream_out.buffer
-    except AttributeError:
-        reader = stream_in
-        writer = stream_out
     if not is_rpm(reader):
         raise IOError('the input is not a RPM package')
     cpio = extract_cpio(reader)
@@ -169,36 +167,5 @@ def rpm2cpio(stream_in=None, stream_out=None):
         raise IOError('could not find compressed cpio archive')
     writer.write(cpio)
 
-
-def main(args=None):
-    if args is None:
-        args = sys.argv
-    if args[1:]:
-        try:
-            fin = open(args[1])
-            rpm2cpio(fin)
-            fin.close()
-        except IOError as e:
-            print('Error:', args[1], e)
-            sys.exit(1)
-        except OSError as e:
-            print('Error: could not find lzma extractor')
-            print("Please, install Python's lzma module or the xz utility")
-            sys.exit(1)
-    else:
-        try:
-            rpm2cpio()
-        except IOError as e:
-            print('Error:', e)
-            sys.exit(1)
-        except OSError as e:
-            print('Error: could not find lzma extractor')
-            print("Please install Python's lzma module or the xz utility")
-            sys.exit(1)
-
-
 if __name__ == '__main__':
-    try:
-        main()
-    except KeyboardInterrupt:
-        print('Interrupted!')
+    rpm2cpio()
